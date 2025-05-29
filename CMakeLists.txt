@@ -65,16 +65,40 @@ endif()
 
 # LIBRARY DEPENDENCIES
 
-find_path(LIBCARES_INCLUDE_DIR ares.h)
-find_path(LIBEV_INCLUDE_DIR ev.h)
+find_package(PkgConfig REQUIRED)
+
+# For libcurl and its static dependencies.
+# The static-cross-build.sh script sets PKG_CONFIG="pkg-config --static",
+# so pkg_check_modules will use that to get all necessary static libs.
+pkg_check_modules(PC_CURL REQUIRED libcurl)
+if(NOT PC_CURL_FOUND)
+  message(FATAL_ERROR "libcurl.pc not found or pkg-config failed. PKG_CONFIG_PATH='${PKG_CONFIG_PATH}'. This is required for static linking.")
+endif()
+message(STATUS "libcurl libraries from pkg-config: ${PC_CURL_LIBRARIES}")
+message(STATUS "libcurl library_dirs from pkg-config: ${PC_CURL_LIBRARY_DIRS}") # For info, CMAKE_PREFIX_PATH should handle this.
+
+message(STATUS "Attempting to find libraries. CMAKE_PREFIX_PATH='${CMAKE_PREFIX_PATH}', CMAKE_FIND_ROOT_PATH='${CMAKE_FIND_ROOT_PATH}'")
+
+find_path(LIBCARES_INCLUDE_DIR
+          NAMES ares.h
+          HINTS "${CMAKE_PREFIX_PATH}"
+          NO_CMAKE_SYSTEM_PATH NO_SYSTEM_ENVIRONMENT_PATH) # Be very specific
+
+find_path(LIBEV_INCLUDE_DIR
+          NAMES ev.h
+          HINTS "${CMAKE_PREFIX_PATH}"
+          NO_CMAKE_SYSTEM_PATH NO_SYSTEM_ENVIRONMENT_PATH) # Be very specific
 
 if(CUSTOM_LIBCURL_INSTALL_PATH)
   message(STATUS "Using custom libcurl from: ${CUSTOM_LIBCURL_INSTALL_PATH}")
   set(LIBCURL_INCLUDE_DIR "${CUSTOM_LIBCURL_INSTALL_PATH}/include")
   link_directories(BEFORE "${CUSTOM_LIBCURL_INSTALL_PATH}/lib")
 else()
-  message(STATUS "Using system libcurl")
-  find_path(LIBCURL_INCLUDE_DIR curl/curl.h)
+  message(STATUS "Searching for libcurl using find_path. Will check HINTS based on CMAKE_PREFIX_PATH: '${CMAKE_PREFIX_PATH}/include'")
+  find_path(LIBCURL_INCLUDE_DIR
+            NAMES curl/curl.h
+            HINTS "${CMAKE_PREFIX_PATH}"
+            NO_CMAKE_SYSTEM_PATH NO_SYSTEM_ENVIRONMENT_PATH) # Be very specific
 endif()
 
 include_directories(
@@ -106,10 +130,19 @@ endif()
 # The main binary
 set(TARGET_NAME "https_dns_proxy")
 aux_source_directory(src SRC_LIST)
-set(SRC_LIST ${SRC_LIST})
 add_executable(${TARGET_NAME} ${SRC_LIST})
-set(LIBS ${LIBS} cares curl ev resolv)
-target_link_libraries(${TARGET_NAME} ${LIBS})
+
+# Link libcurl (which PC_CURL_LIBRARIES should include) and its static dependencies found by pkg-config.
+# Also link other direct dependencies like libev and c-ares (if not already pulled by libcurl.pc).
+# 'resolv' is often needed for network functions.
+# PC_CURL_LIBRARIES from pkg-config should list libcurl and its static dependencies (like c-ares, openssl, zlib, etc.)
+# We also need libev and potentially system libraries like resolv, pthread, dl.
+# For static linking, the order can matter. Libraries should be listed after objects/libraries that depend on them,
+# or all interdependent libraries should be grouped. pkg-config usually handles this for its known dependencies.
+set(LINK_LIBS ${PC_CURL_LIBRARIES} ev resolv pthread dl) # Add pthread and dl, often needed for full static linking with network libs
+list(REMOVE_DUPLICATES LINK_LIBS) # Ensures libraries like 'curl' or 'cares' aren't listed twice if also in PC_CURL_LIBRARIES
+message(STATUS "Final libraries for linking against ${TARGET_NAME}: ${LINK_LIBS}")
+target_link_libraries(${TARGET_NAME} PRIVATE ${LINK_LIBS}) # Using PRIVATE as these are link dependencies for the executable
 set_property(TARGET ${TARGET_NAME} PROPERTY C_STANDARD 11)
 
 define_file_basename_for_sources("https_dns_proxy")
